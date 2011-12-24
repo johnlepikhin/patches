@@ -1,0 +1,27 @@
+diff -Naur pcre-ocaml-release-6.2.3.orig/lib/Makefile.win32 pcre-ocaml-release-6.2.3/lib/Makefile.win32
+--- pcre-ocaml-release-6.2.3.orig/lib/Makefile.win32	2011-11-09 22:40:38.000000000 +0400
++++ pcre-ocaml-release-6.2.3/lib/Makefile.win32	2011-12-12 10:01:58.026039100 +0400
+@@ -28,7 +28,7 @@
+ 	ocamlopt -verbose -a -o pcre.cmxa pcre.cmx \
+   		-cclib pcre_stubs.lib -cclib libpcre.lib 
+ 
+-install:
++install: pcre.cmxa pcre.cma
+ 	ocamlfind install pcre META pcre.cma pcre.cmxa pcre.cmi pcre.mli \
+ 		pcre.lib pcre_stubs.lib
+ uninstall:
+diff -Naur pcre-ocaml-release-6.2.3.orig/lib/pcre_stubs.c pcre-ocaml-release-6.2.3/lib/pcre_stubs.c
+--- pcre-ocaml-release-6.2.3.orig/lib/pcre_stubs.c	2011-11-09 22:40:38.000000000 +0400
++++ pcre-ocaml-release-6.2.3/lib/pcre_stubs.c	2011-12-12 10:01:15.169593800 +0400
+@@ -503,7 +503,11 @@
+       if (ret < 0) handle_exec_error("pcre_exec_stub", ret);
+       else {
+         const int *ovec_src = ovec + subgroups2_1;
++#if _WIN64
++        long long *ovec_dst = (long long *) ovec + subgroups2_1;
++#else
+         long int *ovec_dst = (long int *) ovec + subgroups2_1;
++#endif
+ 
+         /* Converts offsets from C-integers to OCaml-Integers
+            This is a bit tricky, because there are 32- and 64-bit platforms
