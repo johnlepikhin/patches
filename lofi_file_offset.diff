@@ -1,0 +1,177 @@
+diff --git a/usr/src/cmd/lofiadm/main.c b/usr/src/cmd/lofiadm/main.c
+index deadd4c..7229454 100644
+--- a/usr/src/cmd/lofiadm/main.c
++++ b/usr/src/cmd/lofiadm/main.c
+@@ -65,7 +65,7 @@
+ static const char USAGE[] =
+ 	"Usage: %s -a file [ device ] "
+ 	" [-c aes-128-cbc|aes-192-cbc|aes-256-cbc|des3-cbc|blowfish-cbc]"
+-	" [-e] [-k keyfile] [-T [token]:[manuf]:[serial]:key]\n"
++	" [-e] [-k keyfile] [-T [token]:[manuf]:[serial]:key] [-O offset]\n"
+ 	"       %s -d file | device\n"
+ 	"       %s -C [gzip|gzip-6|gzip-9|lzma] [-s segment_size] file\n"
+ 	"       %s -U file\n"
+@@ -363,10 +363,12 @@ lofi_map_file(int lfd, struct lofi_ioctl li, const char *filename)
+  */
+ static void
+ add_mapping(int lfd, const char *devicename, const char *filename,
+-    mech_alias_t *cipher, const char *rkey, size_t rksz)
++    mech_alias_t *cipher, const char *rkey, size_t rksz, u_offset_t file_offset)
+ {
+ 	struct lofi_ioctl li;
+ 
++	li.li_file_offset = file_offset;
++
+ 	li.li_crypto_enabled = B_FALSE;
+ 	if (cipher != NULL) {
+ 		/* set up encryption for mapped file */
+@@ -1770,6 +1772,43 @@ convert_to_num(const char *str)
+ 	return (segsize);
+ }
+ 
++static uint64_t
++convert_to_offset(const char *str)
++{
++	int len;
++	u_offset_t r, mult = 1;
++
++
++	len = strlen(str);
++	if (len && isalpha(str[len - 1])) {
++		switch (str[len - 1]) {
++		case 'k':
++		case 'K':
++			mult = KILOBYTE;
++			break;
++		case 'b':
++		case 'B':
++			mult = BLOCK_SIZE;
++			break;
++		case 'm':
++		case 'M':
++			mult = MEGABYTE;
++			break;
++		case 'g':
++		case 'G':
++			mult = GIGABYTE;
++			break;
++		default:
++			die(gettext("invalid offset %s\n"), str);
++		}
++	}
++
++	r = atoll(str);
++	r *= mult;
++
++	return (r);
++}
++
+ int
+ main(int argc, char *argv[])
+ {
+@@ -1782,6 +1821,7 @@ main(int argc, char *argv[])
+ 	int	minor;
+ 	int 	compress_index;
+ 	uint32_t segsize = SEGSIZE;
++	u_offset_t file_offset = 0;
+ 	static char *lofictl = "/dev/" LOFI_CTL_NAME;
+ 	boolean_t force = B_FALSE;
+ 	const char *pname;
+@@ -1791,6 +1831,7 @@ main(int argc, char *argv[])
+ 	boolean_t ephflag = B_FALSE;
+ 	boolean_t compressflag = B_FALSE;
+ 	boolean_t uncompressflag = B_FALSE;
++	boolean_t file_offsetflag = B_FALSE;
+ 	/* the next two work together for -c, -k, -T, -e options only */
+ 	boolean_t need_crypto = B_FALSE;	/* if any -c, -k, -T, -e */
+ 	boolean_t cipher_only = B_TRUE;		/* if -c only */
+@@ -1806,7 +1847,7 @@ main(int argc, char *argv[])
+ 	(void) setlocale(LC_ALL, "");
+ 	(void) textdomain(TEXT_DOMAIN);
+ 
+-	while ((c = getopt(argc, argv, "a:c:Cd:efk:o:s:T:U")) != EOF) {
++	while ((c = getopt(argc, argv, "a:c:Cd:efk:o:s:O:T:U")) != EOF) {
+ 		switch (c) {
+ 		case 'a':
+ 			addflag = B_TRUE;
+@@ -1881,6 +1922,10 @@ main(int argc, char *argv[])
+ 		case 'U':
+ 			uncompressflag = B_TRUE;
+ 			break;
++		case 'O':
++			file_offsetflag = B_TRUE;
++			file_offset = convert_to_offset(optarg);
++			break;
+ 		case '?':
+ 		default:
+ 			errflag = B_TRUE;
+@@ -2007,7 +2052,7 @@ main(int argc, char *argv[])
+ 	 * Now to the real work.
+ 	 */
+ 	if (addflag)
+-		add_mapping(lfd, devicename, filename, cipher, rkey, rksz);
++		add_mapping(lfd, devicename, filename, cipher, rkey, rksz, file_offset);
+ 	else if (compressflag)
+ 		lofi_compress(&lfd, filename, compress_index, segsize);
+ 	else if (uncompressflag)
+diff --git a/usr/src/uts/common/io/lofi.c b/usr/src/uts/common/io/lofi.c
+index 049a023..f2d0f18 100644
+--- a/usr/src/uts/common/io/lofi.c
++++ b/usr/src/uts/common/io/lofi.c
+@@ -1018,7 +1018,7 @@ lofi_strategy_task(void *arg)
+ 	}
+ 	bp_mapin(bp);
+ 	bufaddr = bp->b_un.b_addr;
+-	offset = bp->b_lblkno * DEV_BSIZE;	/* offset within file */
++	offset = bp->b_lblkno * DEV_BSIZE + lsp->ls_file_offset;	/* offset within file */
+ 	if (lsp->ls_crypto_enabled) {
+ 		/* encrypted data really begins after crypto header */
+ 		offset += lsp->ls_crypto_offset;
+@@ -1373,7 +1373,7 @@ lofi_strategy(struct buf *bp)
+ 		return (0);
+ 	}
+ 
+-	offset = bp->b_lblkno * DEV_BSIZE;	/* offset within file */
++	offset = bp->b_lblkno * DEV_BSIZE + lsp->ls_file_offset;	/* offset within file */
+ 	if (lsp->ls_crypto_enabled) {
+ 		/* encrypted data really begins after crypto header */
+ 		offset += lsp->ls_crypto_offset;
+@@ -1689,7 +1689,7 @@ file_to_lofi(char *filename, struct lofi_state **lspp)
+ static void
+ fake_disk_geometry(struct lofi_state *lsp)
+ {
+-	u_offset_t dsize = lsp->ls_vp_size - lsp->ls_crypto_offset;
++	u_offset_t dsize = lsp->ls_vp_size - lsp->ls_crypto_offset - lsp->ls_file_offset;
+ 
+ 	/* dk_geom - see dkio(7I) */
+ 	/*
+@@ -2189,6 +2189,7 @@ lofi_map_file(dev_t dev, struct lofi_ioctl *ulip, int pickminor,
+ 	lsp->ls_uncomp_seg_sz = 0;
+ 	lsp->ls_comp_algorithm[0] = '\0';
+ 	lsp->ls_crypto_offset = 0;
++	lsp->ls_file_offset = klip->li_file_offset;
+ 
+ 	cv_init(&lsp->ls_vp_cv, NULL, CV_DRIVER, NULL);
+ 	mutex_init(&lsp->ls_comp_cache_lock, NULL, MUTEX_DRIVER, NULL);
+diff --git a/usr/src/uts/common/sys/lofi.h b/usr/src/uts/common/sys/lofi.h
+index d82cc03..dbad3c4 100644
+--- a/usr/src/uts/common/sys/lofi.h
++++ b/usr/src/uts/common/sys/lofi.h
+@@ -141,6 +141,8 @@ struct lofi_ioctl {
+ 	crypto_mech_name_t	li_iv_cipher;	/* for iv derivation */
+ 	uint32_t	li_iv_len;		/* for iv derivation */
+ 	iv_method_t	li_iv_type;		/* for iv derivation */
++
++	u_offset_t	li_file_offset;
+ };
+ 
+ #define	LOFI_IOC_BASE		(('L' << 16) | ('F' << 8))
+@@ -266,7 +268,7 @@ struct lofi_state {
+ 	iv_method_t		ls_iv_type;	/* for iv derivation */
+ 	kmutex_t		ls_crypto_lock;
+ 	crypto_ctx_template_t	ls_ctx_tmpl;
+-
++	u_offset_t		ls_file_offset;
+ };
+ 
+ #endif	/* _KERNEL */
